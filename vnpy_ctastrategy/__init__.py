@@ -28,7 +28,7 @@ from vnpy.trader.constant import Direction
 from vnpy.trader.object import TickData, BarData, TradeData, OrderData
 from vnpy.trader.utility import BarGenerator, TimerGenerator, ArrayManager
 
-from .base import APP_NAME, SlippageMode, StopOrder
+from .base import APP_NAME, StopOrder
 from .engine import CtaEngine
 from .template import CtaTemplate, CtaSignal, TargetPosTemplate
 
@@ -40,7 +40,6 @@ __all__ = [
     "CtaSignal",
     "TargetPosTemplate",
     "StopOrder",
-    "SlippageMode",
     "Direction",
     "TickData",
     "BarData",

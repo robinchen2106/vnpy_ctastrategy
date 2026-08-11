@@ -4,7 +4,7 @@ from datetime import datetime
 from vnpy.trader.constant import Direction, Exchange, Interval, Offset
 from vnpy.trader.object import TradeData
 
-from vnpy_ctastrategy.backtesting import BacktestingEngine, DailyResult, SlippageMode
+from vnpy_ctastrategy.backtesting import BacktestingEngine, DailyResult
 
 
 class BacktestingFeeModelTest(unittest.TestCase):
@@ -49,8 +49,8 @@ class BacktestingFeeModelTest(unittest.TestCase):
         self.assertEqual(result.stamp_tax, 50.0)
         self.assertEqual(result.stamp_duty, 50.0)
         self.assertEqual(result.commission, 70.0)
-        self.assertEqual(result.slippage, 60.0)
-        self.assertEqual(result.net_pnl, -130.0)
+        self.assertEqual(result.slippage, 460.0)
+        self.assertEqual(result.net_pnl, -530.0)
 
     def test_minimum_commission_and_canonical_parameter_names(self) -> None:
         engine = BacktestingEngine()
@@ -71,9 +71,8 @@ class BacktestingFeeModelTest(unittest.TestCase):
         self.assertEqual(engine.stamp_duty, 0.0005)
         self.assertEqual(engine.stamp_tax_rate, 0.0005)
         self.assertEqual(engine.slippage_rate, 0.0003)
-        self.assertEqual(engine.slippage_mode, SlippageMode.RATE)
 
-    def test_fixed_and_rate_slippage_are_exclusive(self) -> None:
+    def test_fixed_and_rate_slippage_are_combined(self) -> None:
         result = DailyResult(datetime(2024, 1, 2).date(), 100.0)
         result.add_trade(self.make_trade("fixed", Direction.LONG, 100.0, 1000))
 
@@ -84,10 +83,9 @@ class BacktestingFeeModelTest(unittest.TestCase):
             rate=0.0,
             slippage=0.2,
             slippage_rate=0.0003,
-            slippage_mode=SlippageMode.FIXED,
         )
 
-        self.assertEqual(result.slippage, 200.0)
+        self.assertEqual(result.slippage, 230.0)
 
 
 if __name__ == "__main__":

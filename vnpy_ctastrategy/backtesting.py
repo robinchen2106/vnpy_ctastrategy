@@ -24,7 +24,6 @@ from vnpy.trader.optimize import (
 from .base import (
     BacktestingMode,
     EngineType,
-    SlippageMode,
     STOPORDER_PREFIX,
     StopOrder,
     StopOrderStatus,
@@ -59,7 +58,6 @@ class BacktestingEngine:
         self.minimum_commission: float = 0
         self.stamp_tax_rate: float = 0
         self.slippage_rate: float = DEFAULT_SLIPPAGE_RATE
-        self.slippage_mode: SlippageMode = SlippageMode.RATE
         self.capital: int = 1_000_000
         self.risk_free: float = 0
         self.annual_days: int = 240
@@ -131,7 +129,6 @@ class BacktestingEngine:
         slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
         minimum_commission: float | None = None,
         stamp_tax_rate: float | None = None,
-        slippage_mode: SlippageMode | str = SlippageMode.RATE,
     ) -> None:
         """Set backtesting parameters and per-trade cost model.
 
@@ -143,7 +140,6 @@ class BacktestingEngine:
             min_commission = minimum_commission
         if stamp_tax_rate is not None:
             stamp_duty = stamp_tax_rate
-        slippage_mode = SlippageMode(slippage_mode)
 
         for fee in (rate, slippage, min_commission, stamp_duty, slippage_rate):
             if fee < 0:
@@ -176,7 +172,6 @@ class BacktestingEngine:
         self.minimum_commission = min_commission
         self.stamp_tax_rate = stamp_duty
         self.slippage_rate = slippage_rate
-        self.slippage_mode = slippage_mode
 
     def add_strategy(self, strategy_class: type[CtaTemplate], setting: dict) -> None:
         """"""
@@ -315,7 +310,6 @@ class BacktestingEngine:
                 self.min_commission,
                 self.stamp_duty,
                 self.slippage_rate,
-                slippage_mode=self.slippage_mode,
             )
 
             pre_close = daily_result.close_price
@@ -1199,14 +1193,12 @@ class DailyResult:
         slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
         minimum_commission: float | None = None,
         stamp_tax_rate: float | None = None,
-        slippage_mode: SlippageMode | str = SlippageMode.RATE,
     ) -> None:
         """Calculate daily PnL and per-trade transaction costs."""
         if minimum_commission is not None:
             min_commission = minimum_commission
         if stamp_tax_rate is not None:
             stamp_duty = stamp_tax_rate
-        slippage_mode = SlippageMode(slippage_mode)
 
         # If no pre_close provided on the first day,
         # use value 1 to avoid zero division error
@@ -1234,10 +1226,8 @@ class DailyResult:
 
             turnover: float = trade.volume * size * trade.price
             self.trading_pnl += pos_change * (self.close_price - trade.price) * size
-            if slippage_mode == SlippageMode.FIXED:
-                self.slippage += trade.volume * size * slippage
-            else:
-                self.slippage += round(turnover * slippage_rate, 2)
+            self.slippage += trade.volume * size * slippage
+            self.slippage += round(turnover * slippage_rate, 2)
 
             self.turnover += turnover
 
@@ -1294,7 +1284,6 @@ def evaluate(
     stamp_duty: float,
     setting: dict,
     slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
-    slippage_mode: SlippageMode | str = SlippageMode.RATE,
 ) -> tuple:
     """
     Function for running in multiprocessing.pool
@@ -1315,7 +1304,6 @@ def evaluate(
         min_commission=min_commission,
         stamp_duty=stamp_duty,
         slippage_rate=slippage_rate,
-        slippage_mode=slippage_mode,
     )
 
     engine.add_strategy(strategy_class, setting)
@@ -1349,7 +1337,6 @@ def wrap_evaluate(engine: BacktestingEngine, target_name: str) -> Callable:
         engine.min_commission,
         engine.stamp_duty,
         slippage_rate=engine.slippage_rate,
-        slippage_mode=engine.slippage_mode,
     )
     return func
 
