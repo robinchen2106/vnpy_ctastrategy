@@ -62,7 +62,8 @@ class BacktestingFeeModelTest(unittest.TestCase):
         engine.set_parameters(
             vt_symbol="000001.SZSE",
             interval=Interval.DAILY,
-            start=datetime(2024, 1, 1),
+            warmup=datetime(2024, 1, 1),
+            start=datetime(2024, 1, 2),
             rate=0.0001,
             slippage=0.0,
             size=1.0,
@@ -121,7 +122,8 @@ class BacktestingFeeModelTest(unittest.TestCase):
         engine.set_parameters(
             vt_symbol="000001.SZSE",
             interval=Interval.DAILY,
-            start=datetime(2024, 1, 1),
+            warmup=datetime(2024, 1, 1),
+            start=datetime(2024, 1, 2),
             rate=0.0,
             slippage=0.0,
             size=1.0,

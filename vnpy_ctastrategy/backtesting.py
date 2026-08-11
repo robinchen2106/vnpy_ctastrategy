@@ -11,7 +11,7 @@ from pandas.core.window import ExponentialMovingWindow
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from vnpy.trader.constant import Direction, Offset, Exchange, Interval, Status
-from vnpy.trader.database import get_database, BaseDatabase
+from vnpy.trader.database import get_database, BaseDatabase, DB_TZ
 from vnpy.trader.object import OrderData, TradeData, BarData, TickData
 from vnpy.trader.utility import round_to, extract_vt_symbol
 from vnpy.trader.optimize import (
@@ -36,6 +36,13 @@ from .locale import _
 DEFAULT_SLIPPAGE_RATE: float = 3 / 10_000
 
 
+def to_db_timezone(dt: datetime) -> datetime:
+    """Convert a datetime to database-local timezone-aware time."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=DB_TZ)
+    return dt.astimezone(DB_TZ)
+
+
 class BacktestingEngine:
     """"""
 
@@ -47,6 +54,7 @@ class BacktestingEngine:
         self.vt_symbol: str = ""
         self.symbol: str = ""
         self.exchange: Exchange
+        self.warmup: datetime
         self.start: datetime
         self.end: datetime
         self.rate: float = 0
@@ -74,6 +82,7 @@ class BacktestingEngine:
         self.days: int = 0
         self.callback: Callable
         self.history_data: list = []
+        self._strategy_loaded_warmup: bool = False
 
         self.stop_order_count: int = 0
         self.stop_orders: dict[str, StopOrder] = {}
@@ -108,11 +117,14 @@ class BacktestingEngine:
 
         self.logs.clear()
         self.daily_results.clear()
+        self.daily_df = DataFrame()
+        self._strategy_loaded_warmup = False
 
     def set_parameters(
         self,
         vt_symbol: str,
         interval: Interval,
+        warmup: datetime,
         start: datetime,
         rate: float,
         slippage: float,
@@ -152,7 +164,11 @@ class BacktestingEngine:
         self.slippage = slippage
         self.size = size
         self.pricetick = pricetick
-        self.start = start
+
+        self.warmup = to_db_timezone(warmup)
+        self.start = to_db_timezone(start)
+        if self.warmup > self.start:
+            raise ValueError("warmup must not be later than start")
 
         self.symbol, exchange_str = self.vt_symbol.split(".")
         self.exchange = Exchange(exchange_str)
@@ -160,8 +176,10 @@ class BacktestingEngine:
         self.capital = capital
 
         if not end:
-            end = datetime.now()
-        self.end = end.replace(hour=23, minute=59, second=59)
+            end = datetime.now(DB_TZ)
+        self.end = to_db_timezone(end).replace(hour=23, minute=59, second=59)
+        if self.start >= self.end:
+            raise ValueError("start must be earlier than the backtest end")
 
         self.mode = mode
         self.risk_free = risk_free
@@ -185,22 +203,23 @@ class BacktestingEngine:
         self.output(_("开始加载历史数据"))
 
         if not self.end:
-            self.end = datetime.now()
+            self.end = datetime.now(DB_TZ)
 
-        if self.start >= self.end:
+        if self.warmup >= self.end:
             self.output(_("起始日期必须小于结束日期"))
             return
 
         self.history_data.clear()  # Clear previously loaded history data
 
         # Load 30 days of data each time and allow for progress update
-        total_days: int = (self.end - self.start).days
+        data_start: datetime = self.warmup
+        total_days: int = (self.end - data_start).days
         progress_days: int = max(int(total_days / 10), 1)
         progress_delta: timedelta = timedelta(days=progress_days)
         interval_delta: timedelta = INTERVAL_DELTA_MAP[self.interval]
 
-        start: datetime = self.start
-        end: datetime = self.start + progress_delta
+        start: datetime = data_start
+        end: datetime = data_start + progress_delta
         progress: float = 0
 
         while start < self.end:
@@ -233,7 +252,14 @@ class BacktestingEngine:
         else:
             func = self.new_tick
 
+        self._strategy_loaded_warmup = False
+        self.strategy.inited = False
+        self.strategy.trading = False
         self.strategy.on_init()
+
+        self.output(_("预热日期：{}，开始日期：{}").format(self.warmup, self.start))
+        self._run_warmup()
+
         self.strategy.inited = True
         self.output(_("策略初始化完成"))
 
@@ -241,7 +267,15 @@ class BacktestingEngine:
         self.strategy.trading = True
         self.output(_("开始回放历史数据"))
 
-        first_data: BarData | TickData = self.history_data[0]
+        formal_data: list[BarData | TickData] = [
+            data for data in self.history_data
+            if data.datetime >= self.start
+        ]
+
+        if not formal_data:
+            raise RuntimeError("no historical data available for formal trading")
+
+        first_data: BarData | TickData = formal_data[0]
         first_dt: datetime = first_data.datetime
         for dt in date_range(
             first_dt.replace(hour=0, minute=0, second=0), first_dt, freq="min"
@@ -249,11 +283,11 @@ class BacktestingEngine:
             self.datetime = dt.to_pydatetime()
             self.strategy.on_timer(self.datetime)
 
-        total_size: int = len(self.history_data)
+        total_size: int = len(formal_data)
         batch_size: int = max(int(total_size / 10), 1)
 
         for ix, i in enumerate(range(0, total_size, batch_size)):
-            batch_data: list[BarData | TickData] = self.history_data[i : i + batch_size]
+            batch_data: list[BarData | TickData] = formal_data[i : i + batch_size]
             for data in batch_data:
                 try:
                     while data.datetime - self.datetime >= timedelta(minutes=1):
@@ -269,7 +303,7 @@ class BacktestingEngine:
             progress_bar: str = "=" * (ix + 1)
             self.output(_("回放进度：{} [{:.0%}]").format(progress_bar, progress))
 
-        last_data: BarData | TickData = self.history_data[-1]
+        last_data: BarData | TickData = formal_data[-1]
         last_dt: datetime = last_data.datetime
         for dt in date_range(
             last_dt, last_dt.replace(hour=23, minute=59, second=59), freq="min"
@@ -279,6 +313,32 @@ class BacktestingEngine:
 
         self.strategy.on_stop()
         self.output(_("历史数据回放结束"))
+
+    def _run_warmup(self) -> None:
+        """Replay warmup data without matching orders or recording results."""
+        if self.warmup == self.start or self._strategy_loaded_warmup:
+            return
+
+        warmup_data: list[BarData | TickData] = [
+            data for data in self.history_data
+            if data.datetime < self.start
+        ]
+        if not warmup_data:
+            raise RuntimeError("no historical data available for warmup")
+
+        self.output(
+            _("预热区间：{} 至 {}（{}条）").format(
+                warmup_data[0].datetime,
+                warmup_data[-1].datetime,
+                len(warmup_data),
+            )
+        )
+
+        for data in warmup_data:
+            if self.mode == BacktestingMode.BAR:
+                self.new_bar(cast(BarData, data), warmup=True)
+            else:
+                self.new_tick(cast(TickData, data), warmup=True)
 
     def calculate_result(self) -> DataFrame:
         """"""
@@ -292,8 +352,13 @@ class BacktestingEngine:
             if not trade.datetime:
                 continue
 
+            if trade.datetime < self.start:
+                continue
+
             d: Date = trade.datetime.date()
-            daily_result: DailyResult = self.daily_results[d]
+            daily_result: DailyResult | None = self.daily_results.get(d)
+            if daily_result is None:
+                continue
             daily_result.add_trade(trade)
 
         # Calculate daily result by iteration.
@@ -488,19 +553,24 @@ class BacktestingEngine:
 
             # Calculate benchmark return using history first open and last close
             if hasattr(self, "history_data") and self.history_data:
-                first_data = self.history_data[0]
-                last_data = self.history_data[-1]
+                benchmark_data = [
+                    data for data in self.history_data
+                    if data.datetime >= self.start
+                ]
 
-                start_open = getattr(first_data, "open_price", None)
-                if start_open is None:
-                    start_open = getattr(first_data, "last_price", None)
+                if benchmark_data:
+                    first_data = benchmark_data[0]
+                    last_data = benchmark_data[-1]
+                    start_open = getattr(first_data, "open_price", None)
+                    if start_open is None:
+                        start_open = getattr(first_data, "last_price", None)
 
-                end_close = getattr(last_data, "close_price", None)
-                if end_close is None:
-                    end_close = getattr(last_data, "last_price", None)
+                    end_close = getattr(last_data, "close_price", None)
+                    if end_close is None:
+                        end_close = getattr(last_data, "last_price", None)
 
-                if start_open and end_close:
-                    benchmark_return = (end_close / start_open - 1) * 100
+                    if start_open and end_close:
+                        benchmark_return = (end_close / start_open - 1) * 100
 
             excess_return = total_return - benchmark_return
 
@@ -742,27 +812,31 @@ class BacktestingEngine:
         else:
             self.daily_results[d] = DailyResult(d, price)
 
-    def new_bar(self, bar: BarData) -> None:
+    def new_bar(self, bar: BarData, warmup: bool = False) -> None:
         """"""
         self.bar = bar
         self.datetime = bar.datetime
 
-        self.cross_limit_order()
-        self.cross_stop_order()
+        if not warmup:
+            self.cross_limit_order()
+            self.cross_stop_order()
         self.strategy.on_bar(bar)
 
-        self.update_daily_close(bar.close_price)
+        if not warmup:
+            self.update_daily_close(bar.close_price)
 
-    def new_tick(self, tick: TickData) -> None:
+    def new_tick(self, tick: TickData, warmup: bool = False) -> None:
         """"""
         self.tick = tick
         self.datetime = tick.datetime
 
-        self.cross_limit_order()
-        self.cross_stop_order()
+        if not warmup:
+            self.cross_limit_order()
+            self.cross_stop_order()
         self.strategy.on_tick(tick)
 
-        self.update_daily_close(tick.last_price)
+        if not warmup:
+            self.update_daily_close(tick.last_price)
 
     def cross_limit_order(self) -> None:
         """
@@ -936,14 +1010,20 @@ class BacktestingEngine:
         """"""
         self.callback = callback
 
+        if self.warmup == self.start:
+            return []
+
         init_end = self.start - INTERVAL_DELTA_MAP[interval]
-        init_start = self.start - timedelta(days=days)
+        init_start = self.warmup
 
         symbol, exchange = extract_vt_symbol(vt_symbol)
 
         bars: list[BarData] = load_bar_data(
             symbol, exchange, interval, init_start, init_end
         )
+
+        if bars:
+            self._strategy_loaded_warmup = True
 
         return bars
 
@@ -953,12 +1033,18 @@ class BacktestingEngine:
         """"""
         self.callback = callback
 
+        if self.warmup == self.start:
+            return []
+
         init_end = self.start - timedelta(seconds=1)
-        init_start = self.start - timedelta(days=days)
+        init_start = self.warmup
 
         symbol, exchange = extract_vt_symbol(vt_symbol)
 
         ticks: list[TickData] = load_tick_data(symbol, exchange, init_start, init_end)
+
+        if ticks:
+            self._strategy_loaded_warmup = True
 
         return ticks
 
@@ -1259,6 +1345,7 @@ def evaluate(
     strategy_class: type[CtaTemplate],
     vt_symbol: str,
     interval: Interval,
+    warmup: datetime,
     start: datetime,
     rate: float,
     slippage: float,
@@ -1283,6 +1370,7 @@ def evaluate(
     engine.set_parameters(
         vt_symbol=vt_symbol,
         interval=interval,
+        warmup=warmup,
         start=start,
         rate=rate,
         slippage=slippage,
@@ -1319,6 +1407,7 @@ def wrap_evaluate(engine: BacktestingEngine, target_name: str) -> Callable:
         engine.strategy_class,
         engine.vt_symbol,
         engine.interval,
+        engine.warmup,
         engine.start,
         engine.rate,
         engine.slippage,
