@@ -29,6 +29,11 @@ class BacktestingMode(Enum):
     TICK = 2
 
 
+class SlippageMode(Enum):
+    FIXED = "fixed"
+    RATE = "rate"
+
+
 @dataclass
 class StopOrder:
     vt_symbol: str

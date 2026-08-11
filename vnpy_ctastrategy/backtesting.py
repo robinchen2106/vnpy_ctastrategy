@@ -24,6 +24,7 @@ from vnpy.trader.optimize import (
 from .base import (
     BacktestingMode,
     EngineType,
+    SlippageMode,
     STOPORDER_PREFIX,
     StopOrder,
     StopOrderStatus,
@@ -31,6 +32,9 @@ from .base import (
 )
 from .template import CtaTemplate
 from .locale import _
+
+
+DEFAULT_SLIPPAGE_RATE: float = 3 / 10_000
 
 
 class BacktestingEngine:
@@ -52,6 +56,10 @@ class BacktestingEngine:
         self.pricetick: float = 0
         self.min_commission: float = 0
         self.stamp_duty: float = 0
+        self.minimum_commission: float = 0
+        self.stamp_tax_rate: float = 0
+        self.slippage_rate: float = DEFAULT_SLIPPAGE_RATE
+        self.slippage_mode: SlippageMode = SlippageMode.RATE
         self.capital: int = 1_000_000
         self.risk_free: float = 0
         self.annual_days: int = 240
@@ -120,8 +128,27 @@ class BacktestingEngine:
         half_life: int = 120,
         min_commission: float = 0,
         stamp_duty: float = 0,
+        slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
+        minimum_commission: float | None = None,
+        stamp_tax_rate: float | None = None,
+        slippage_mode: SlippageMode | str = SlippageMode.RATE,
     ) -> None:
-        """"""
+        """Set backtesting parameters and per-trade cost model.
+
+        ``min_commission`` and ``stamp_duty`` are retained as aliases for
+        compatibility.  ``minimum_commission`` and ``stamp_tax_rate`` use the
+        naming shared with the portfolio backtesting engine.
+        """
+        if minimum_commission is not None:
+            min_commission = minimum_commission
+        if stamp_tax_rate is not None:
+            stamp_duty = stamp_tax_rate
+        slippage_mode = SlippageMode(slippage_mode)
+
+        for fee in (rate, slippage, min_commission, stamp_duty, slippage_rate):
+            if fee < 0:
+                raise ValueError("费用参数不能为负数")
+
         self.mode = mode
         self.vt_symbol = vt_symbol
         self.interval = Interval(interval)
@@ -146,6 +173,10 @@ class BacktestingEngine:
         self.half_life = half_life
         self.min_commission = min_commission
         self.stamp_duty = stamp_duty
+        self.minimum_commission = min_commission
+        self.stamp_tax_rate = stamp_duty
+        self.slippage_rate = slippage_rate
+        self.slippage_mode = slippage_mode
 
     def add_strategy(self, strategy_class: type[CtaTemplate], setting: dict) -> None:
         """"""
@@ -283,6 +314,8 @@ class BacktestingEngine:
                 self.slippage,
                 self.min_commission,
                 self.stamp_duty,
+                self.slippage_rate,
+                slippage_mode=self.slippage_mode,
             )
 
             pre_close = daily_result.close_price
@@ -329,10 +362,15 @@ class BacktestingEngine:
         daily_net_pnl: float = 0
         total_commission: float = 0
         daily_commission: float = 0
+        total_broker_commission: float = 0
+        daily_broker_commission: float = 0
         total_slippage: float = 0
         daily_slippage: float = 0
+        total_stamp_tax: float = 0
+        daily_stamp_tax: float = 0
         total_stamp_duty: float = 0
         daily_stamp_duty: float = 0
+        total_transaction_cost: float = 0
         total_turnover: float = 0
         daily_turnover: float = 0
         total_trade_count: int = 0
@@ -397,14 +435,37 @@ class BacktestingEngine:
             total_net_pnl = df["net_pnl"].sum()
             daily_net_pnl = total_net_pnl / total_days
 
+            broker_commission_series = (
+                df["broker_commission"]
+                if "broker_commission" in df
+                else df["commission"]
+            )
+            stamp_tax_series = (
+                df["stamp_tax"]
+                if "stamp_tax" in df
+                else df["stamp_duty"]
+                if "stamp_duty" in df
+                else Series(0.0, index=df.index)
+            )
+
+            total_broker_commission = broker_commission_series.sum()
+            daily_broker_commission = total_broker_commission / total_days
+            total_stamp_tax = stamp_tax_series.sum()
+            daily_stamp_tax = total_stamp_tax / total_days
+
+            # New DailyResult.commission already includes stamp tax.  Add it
+            # here only for dataframes produced by the old result schema.
             total_commission = df["commission"].sum()
+            if "broker_commission" not in df and "stamp_tax" not in df:
+                total_commission += total_stamp_tax
             daily_commission = total_commission / total_days
+
+            total_stamp_duty = total_stamp_tax
+            daily_stamp_duty = daily_stamp_tax
 
             total_slippage = df["slippage"].sum()
             daily_slippage = total_slippage / total_days
-
-            total_stamp_duty = df["stamp_duty"].sum()
-            daily_stamp_duty = total_stamp_duty / total_days
+            total_transaction_cost = total_commission + total_slippage
 
             total_turnover = df["turnover"].sum()
             daily_turnover = total_turnover / total_days
@@ -511,15 +572,18 @@ class BacktestingEngine:
 
             self.output(_("总盈亏：\t{:,.2f}").format(total_net_pnl))
             self.output(_("总手续费：\t{:,.2f}").format(total_commission))
+            self.output(_("其中双边佣金：\t{:,.2f}").format(total_broker_commission))
+            self.output(_("其中印花税：\t{:,.2f}").format(total_stamp_tax))
             self.output(_("总滑点：\t{:,.2f}").format(total_slippage))
-            self.output(_("总印花税：\t{:,.2f}").format(total_stamp_duty))
+            self.output(_("总交易成本：\t{:,.2f}").format(total_transaction_cost))
             self.output(_("总成交金额：\t{:,.2f}").format(total_turnover))
             self.output(_("总成交笔数：\t{}").format(total_trade_count))
 
             self.output(_("日均盈亏：\t{:,.2f}").format(daily_net_pnl))
             self.output(_("日均手续费：\t{:,.2f}").format(daily_commission))
+            self.output(_("日均双边佣金：\t{:,.2f}").format(daily_broker_commission))
+            self.output(_("日均印花税：\t{:,.2f}").format(daily_stamp_tax))
             self.output(_("日均滑点：\t{:,.2f}").format(daily_slippage))
-            self.output(_("日均印花税：\t{:,.2f}").format(daily_stamp_duty))
             self.output(_("日均成交金额：\t{:,.2f}").format(daily_turnover))
             self.output(_("日均成交笔数：\t{}").format(daily_trade_count))
 
@@ -545,10 +609,15 @@ class BacktestingEngine:
             "daily_net_pnl": daily_net_pnl,
             "total_commission": total_commission,
             "daily_commission": daily_commission,
+            "total_broker_commission": total_broker_commission,
+            "daily_broker_commission": daily_broker_commission,
             "total_slippage": total_slippage,
             "daily_slippage": daily_slippage,
+            "total_stamp_tax": total_stamp_tax,
+            "daily_stamp_tax": daily_stamp_tax,
             "total_stamp_duty": total_stamp_duty,
             "daily_stamp_duty": daily_stamp_duty,
+            "total_transaction_cost": total_transaction_cost,
             "total_turnover": total_turnover,
             "daily_turnover": daily_turnover,
             "total_trade_count": total_trade_count,
@@ -1102,8 +1171,11 @@ class DailyResult:
         self.end_pos: float = 0
 
         self.turnover: float = 0
+        self.broker_commission: float = 0
+        self.stamp_tax: float = 0
         self.commission: float = 0
         self.slippage: float = 0
+        # Backward-compatible result field name.
         self.stamp_duty: float = 0
 
         self.trading_pnl: float = 0
@@ -1124,8 +1196,18 @@ class DailyResult:
         slippage: float,
         min_commission: float = 0,
         stamp_duty: float = 0,
+        slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
+        minimum_commission: float | None = None,
+        stamp_tax_rate: float | None = None,
+        slippage_mode: SlippageMode | str = SlippageMode.RATE,
     ) -> None:
-        """"""
+        """Calculate daily PnL and per-trade transaction costs."""
+        if minimum_commission is not None:
+            min_commission = minimum_commission
+        if stamp_tax_rate is not None:
+            stamp_duty = stamp_tax_rate
+        slippage_mode = SlippageMode(slippage_mode)
+
         # If no pre_close provided on the first day,
         # use value 1 to avoid zero division error
         if pre_close:
@@ -1152,23 +1234,27 @@ class DailyResult:
 
             turnover: float = trade.volume * size * trade.price
             self.trading_pnl += pos_change * (self.close_price - trade.price) * size
-            self.slippage += trade.volume * size * slippage
+            if slippage_mode == SlippageMode.FIXED:
+                self.slippage += trade.volume * size * slippage
+            else:
+                self.slippage += round(turnover * slippage_rate, 2)
 
             self.turnover += turnover
 
             trade_commission: float = turnover * rate
             if min_commission > 0:
                 trade_commission = max(trade_commission, min_commission)
-            self.commission += trade_commission
+            self.broker_commission += round(trade_commission, 2)
 
             if trade.direction == Direction.SHORT:
-                self.stamp_duty += turnover * stamp_duty
+                self.stamp_tax += round(turnover * stamp_duty, 2)
+
+        self.stamp_duty = self.stamp_tax
+        self.commission = self.broker_commission + self.stamp_tax
 
         # Net pnl takes account of commission and slippage cost
         self.total_pnl = self.trading_pnl + self.holding_pnl
-        self.net_pnl = (
-            self.total_pnl - self.commission - self.slippage - self.stamp_duty
-        )
+        self.net_pnl = self.total_pnl - self.commission - self.slippage
 
 
 @lru_cache(maxsize=999)
@@ -1207,6 +1293,8 @@ def evaluate(
     min_commission: float,
     stamp_duty: float,
     setting: dict,
+    slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
+    slippage_mode: SlippageMode | str = SlippageMode.RATE,
 ) -> tuple:
     """
     Function for running in multiprocessing.pool
@@ -1226,6 +1314,8 @@ def evaluate(
         mode=mode,
         min_commission=min_commission,
         stamp_duty=stamp_duty,
+        slippage_rate=slippage_rate,
+        slippage_mode=slippage_mode,
     )
 
     engine.add_strategy(strategy_class, setting)
@@ -1258,6 +1348,8 @@ def wrap_evaluate(engine: BacktestingEngine, target_name: str) -> Callable:
         engine.mode,
         engine.min_commission,
         engine.stamp_duty,
+        slippage_rate=engine.slippage_rate,
+        slippage_mode=engine.slippage_mode,
     )
     return func
 
