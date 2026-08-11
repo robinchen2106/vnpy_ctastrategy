@@ -5,7 +5,11 @@ from pandas import DataFrame
 from vnpy.trader.constant import Direction, Exchange, Interval, Offset
 from vnpy.trader.object import TradeData
 
-from vnpy_ctastrategy.backtesting import BacktestingEngine, DailyResult
+from vnpy_ctastrategy.backtesting import (
+    BacktestingEngine,
+    DailyResult,
+    wrap_evaluate,
+)
 
 
 class BacktestingFeeModelTest(unittest.TestCase):
@@ -111,6 +115,28 @@ class BacktestingFeeModelTest(unittest.TestCase):
         self.assertEqual(statistics["total_transaction_cost"], 17.0)
         self.assertNotIn("total_stamp_duty", statistics)
         self.assertNotIn("daily_stamp_duty", statistics)
+
+    def test_optimization_inherits_statistical_parameters(self) -> None:
+        engine = BacktestingEngine()
+        engine.set_parameters(
+            vt_symbol="000001.SZSE",
+            interval=Interval.DAILY,
+            start=datetime(2024, 1, 1),
+            rate=0.0,
+            slippage=0.0,
+            size=1.0,
+            pricetick=0.01,
+            risk_free=0.025,
+            annual_days=250,
+            half_life=60,
+        )
+        engine.strategy_class = object
+
+        evaluate_function = wrap_evaluate(engine, "sharpe_ratio")
+
+        self.assertEqual(evaluate_function.keywords["risk_free"], 0.025)
+        self.assertEqual(evaluate_function.keywords["annual_days"], 250)
+        self.assertEqual(evaluate_function.keywords["half_life"], 60)
 
 
 if __name__ == "__main__":

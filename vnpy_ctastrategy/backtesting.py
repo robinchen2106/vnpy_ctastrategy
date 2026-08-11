@@ -1271,6 +1271,9 @@ def evaluate(
     stamp_duty: float,
     setting: dict,
     slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
+    risk_free: float = 0,
+    annual_days: int = 240,
+    half_life: int = 120,
 ) -> tuple:
     """
     Function for running in multiprocessing.pool
@@ -1288,6 +1291,9 @@ def evaluate(
         capital=capital,
         end=end,
         mode=mode,
+        risk_free=risk_free,
+        annual_days=annual_days,
+        half_life=half_life,
         min_commission=min_commission,
         stamp_duty=stamp_duty,
         slippage_rate=slippage_rate,
@@ -1324,6 +1330,9 @@ def wrap_evaluate(engine: BacktestingEngine, target_name: str) -> Callable:
         engine.min_commission,
         engine.stamp_duty,
         slippage_rate=engine.slippage_rate,
+        risk_free=engine.risk_free,
+        annual_days=engine.annual_days,
+        half_life=engine.half_life,
     )
     return func
 
