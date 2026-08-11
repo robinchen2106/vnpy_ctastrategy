@@ -1,6 +1,7 @@
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 
+from pandas import DataFrame
 from vnpy.trader.constant import Direction, Exchange, Interval, Offset
 from vnpy.trader.object import TradeData
 
@@ -86,6 +87,30 @@ class BacktestingFeeModelTest(unittest.TestCase):
         )
 
         self.assertEqual(result.slippage, 230.0)
+
+    def test_statistics_only_return_current_stamp_tax_fields(self) -> None:
+        engine = BacktestingEngine()
+        df = DataFrame(
+            {
+                "net_pnl": [-100.0, 200.0],
+                "commission": [7.0, 8.0],
+                "broker_commission": [2.0, 3.0],
+                "stamp_tax": [5.0, 5.0],
+                "slippage": [1.0, 1.0],
+                "turnover": [10_000.0, 20_000.0],
+                "trade_count": [1, 2],
+            },
+            index=[date(2024, 1, 2), date(2024, 1, 3)],
+        )
+
+        statistics = engine.calculate_statistics(df, output=False)
+
+        self.assertEqual(statistics["total_broker_commission"], 5.0)
+        self.assertEqual(statistics["total_stamp_tax"], 10.0)
+        self.assertEqual(statistics["total_commission"], 15.0)
+        self.assertEqual(statistics["total_transaction_cost"], 17.0)
+        self.assertNotIn("total_stamp_duty", statistics)
+        self.assertNotIn("daily_stamp_duty", statistics)
 
 
 if __name__ == "__main__":

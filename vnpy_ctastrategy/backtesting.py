@@ -362,8 +362,6 @@ class BacktestingEngine:
         daily_slippage: float = 0
         total_stamp_tax: float = 0
         daily_stamp_tax: float = 0
-        total_stamp_duty: float = 0
-        daily_stamp_duty: float = 0
         total_transaction_cost: float = 0
         total_turnover: float = 0
         daily_turnover: float = 0
@@ -437,8 +435,6 @@ class BacktestingEngine:
             stamp_tax_series = (
                 df["stamp_tax"]
                 if "stamp_tax" in df
-                else df["stamp_duty"]
-                if "stamp_duty" in df
                 else Series(0.0, index=df.index)
             )
 
@@ -447,15 +443,8 @@ class BacktestingEngine:
             total_stamp_tax = stamp_tax_series.sum()
             daily_stamp_tax = total_stamp_tax / total_days
 
-            # New DailyResult.commission already includes stamp tax.  Add it
-            # here only for dataframes produced by the old result schema.
             total_commission = df["commission"].sum()
-            if "broker_commission" not in df and "stamp_tax" not in df:
-                total_commission += total_stamp_tax
             daily_commission = total_commission / total_days
-
-            total_stamp_duty = total_stamp_tax
-            daily_stamp_duty = daily_stamp_tax
 
             total_slippage = df["slippage"].sum()
             daily_slippage = total_slippage / total_days
@@ -609,8 +598,6 @@ class BacktestingEngine:
             "daily_slippage": daily_slippage,
             "total_stamp_tax": total_stamp_tax,
             "daily_stamp_tax": daily_stamp_tax,
-            "total_stamp_duty": total_stamp_duty,
-            "daily_stamp_duty": daily_stamp_duty,
             "total_transaction_cost": total_transaction_cost,
             "total_turnover": total_turnover,
             "daily_turnover": daily_turnover,
